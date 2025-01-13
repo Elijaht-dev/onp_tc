@@ -26,6 +26,7 @@ class TurbineTracker(QMainWindow):
         self.selecting = False
         self.start_time = None  # Add this after other instance variables
         self.mp4box_path = r"C:\Program Files\GPAC\mp4box.exe"  # Add path to MP4Box executable if needed
+        self.last_calculation_time = 0  # Temps réel de la dernière calcul de débit
         
         # Create central widget and layout
         central_widget = QWidget()
@@ -59,12 +60,11 @@ class TurbineTracker(QMainWindow):
         self.timer.timeout.connect(self.track_pixel)
         self.timer.setInterval(50)  # 20 fps
         
-        self.setGeometry(100, 100, 300, 200)
+        self.setGeometry(100, 100, 800, 900)  # Largeur: 800px, Hauteur: 900px
         
         # Add configuration parameters
         self.slow_motion_factor = 1.0  # e.g., 8x slow motion = 8.0
-        self.blade_area = 0.0  # m²
-        self.flow_coefficient = 0.0  # dimensionless
+        self.blade_area = 0.0065  # Surface d'une pale en m²
         
         # Data for plotting
         self.time_points = deque(maxlen=100)
@@ -76,29 +76,60 @@ class TurbineTracker(QMainWindow):
         
         # Add configuration inputs
         self.slow_motion_input = QDoubleSpinBox()
-        self.slow_motion_input.setRange(1, 1000)
+        self.slow_motion_input.setRange(0.1, 1000)  # Permet des valeurs de 0.1 à 1000 secondes
         self.slow_motion_input.setValue(1.0)
-        self.slow_motion_input.setPrefix("Facteur Ralenti: ")
+        self.slow_motion_input.setPrefix("1s réelle = ")
+        self.slow_motion_input.setSuffix(" s vidéo")
         
         self.area_input = QDoubleSpinBox()
-        self.area_input.setRange(0, 100)
-        self.area_input.setValue(0.0)
+        self.area_input.setRange(0, 0.01)  # Ajusté pour des surfaces en m²
+        self.area_input.setDecimals(4)  # 4 décimales
+        self.area_input.setValue(self.blade_area)
         self.area_input.setPrefix("Surface Pale (m²): ")
-        
-        self.coef_input = QDoubleSpinBox()
-        self.coef_input.setRange(0, 1)
-        self.coef_input.setValue(0.0)
-        self.coef_input.setPrefix("Coefficient de Débit: ")
         
         self.flow_label = QLabel("Débit: 0.0 m³/s")
         
         # Add new widgets to layout
         layout.addWidget(self.slow_motion_input)
         layout.addWidget(self.area_input)
-        layout.addWidget(self.coef_input)
         layout.addWidget(self.flow_label)
         layout.addWidget(self.canvas)
-    
+        
+        # Constants for turbine
+        self.BLADE_AREA = 0.0065  # Surface d'une pale en m²
+        self.BLADE_RADIUS = 0.019  # 1.9 cm to m
+        
+        # Update area_input default value
+        self.area_input.setValue(self.BLADE_AREA)
+        
+        # Add radius display
+        self.radius_label = QLabel(f"Rayon de la turbine: {self.BLADE_RADIUS * 100:.1f} cm")
+        layout.addWidget(self.radius_label)
+
+        # Ajout du bouton de sauvegarde
+        self.save_button = QPushButton("Sauvegarder Données")
+        self.save_button.clicked.connect(self.save_data)
+        layout.addWidget(self.save_button)
+        
+        # Liste pour stocker toutes les données
+        self.all_flow_rates = []
+        self.all_times = []
+
+        # Ajout du bouton de traitement rapide
+        self.process_button = QPushButton("Traitement Rapide")
+        self.process_button.setEnabled(False)
+        self.process_button.clicked.connect(self.process_video)
+        layout.addWidget(self.process_button)
+
+        # Ajouter après self.all_times = []
+        self.current_revolution_flows = []  # Pour stocker les débits du tour actuel
+        self.all_revolution_flows = []      # Pour stocker les débits moyens par tour
+        self.first_revolution_completed = False
+
+        # Ajout des variables de suivi des tours
+        self.complete_revolutions = 0  # Compte des tours complets
+        self.measurement_started = False  # Indique si on a commencé à mesurer
+
     def fix_video(self, video_path):
         """Fix problematic MP4 files using MP4Box"""
         try:
@@ -183,12 +214,21 @@ class TurbineTracker(QMainWindow):
             self.current_frame = frame
             window_name = "Sélectionner Pixel"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            
+            # Redimensionner la fenêtre de sélection
+            height, width = frame.shape[:2]
+            target_width = 800
+            target_height = int(target_width * height / width)
+            cv2.resizeWindow(window_name, target_width, target_height)
+            
             cv2.setMouseCallback(window_name, self.mouse_callback, self)
             cv2.imshow(window_name, frame)
             self.selecting = True
             self.info_label.setText("Cliquez sur le pixel que vous souhaitez suivre")
             cv2.waitKey(0)  # Wait for user input
             cv2.destroyAllWindows()
+            # Activer le bouton de traitement rapide après la sélection
+            self.process_button.setEnabled(True)
     
     def toggle_tracking(self):
         if not self.tracking:
@@ -242,6 +282,15 @@ class TurbineTracker(QMainWindow):
             tracking_frame = frame.copy()
             cv2.circle(tracking_frame, self.selected_pos, 5, (0, 255, 0), -1)
             
+            # Créer et redimensionner la fenêtre de suivi
+            if not hasattr(self, 'tracking_window_created'):
+                cv2.namedWindow("Suivi", cv2.WINDOW_NORMAL)
+                height, width = frame.shape[:2]
+                target_width = 800
+                target_height = int(target_width * height / width)
+                cv2.resizeWindow("Suivi", target_width, target_height)
+                self.tracking_window_created = True
+            
             color = frame[int(self.selected_pos[1]), int(self.selected_pos[0])]
             
             # Define color thresholds for black and yellow
@@ -255,40 +304,63 @@ class TurbineTracker(QMainWindow):
             if self.last_color is not None:
                 if (is_black and not self.last_color) or (not is_black and self.last_color):
                     current_time = self.video_cap.get(cv2.CAP_PROP_POS_MSEC)
+                    real_current_time = current_time/1000.0/self.slow_motion_input.value()
+                    
                     if self.last_time != 0:
-                        if self.revolution_count % 4 == 0:
-                            time_diff = (current_time - self.last_time) / 1000.0 * self.slow_motion_factor
-                            rpm = 60.0 / (time_diff * 4)
+                        if self.revolution_count % 4 == 0:  # Un tour complet
+                            self.complete_revolutions += 1
                             
-                            # Update parameters from inputs
-                            self.slow_motion_factor = self.slow_motion_input.value()
-                            self.blade_area = self.area_input.value()
-                            self.flow_coefficient = self.coef_input.value()
-                            
-                            # Calculate and display flow rate
-                            flow_rate = self.calculate_flow_rate(rpm)
-                            self.speed_label.setText(f"Vitesse: {rpm:.1f} tr/min")
-                            self.flow_label.setText(f"Débit: {flow_rate:.3f} m³/s")
-                            
-                            # Update graph
-                            self.update_graph(current_time/1000.0, flow_rate)
+                            # Commencer les mesures après le 2e tour complet
+                            if self.complete_revolutions >= 2:
+                                self.measurement_started = True
+                                
+                                # Calcul du temps entre deux tours
+                                real_time_diff = (current_time - self.last_time) / 1000.0
+                                actual_time_diff = real_time_diff / self.slow_motion_input.value()
+                                
+                                # Calcul RPM (tours par minute)
+                                rpm = 60.0 / (actual_time_diff * 4)  # Un tour = 4 transitions
+
+                                # Calcul de la vitesse angulaire (ω = 2πN/60)
+                                omega = (2 * np.pi * rpm) / 60
+                                
+                                # Calcul de la vitesse linéaire (v = ω × r)
+                                fluid_velocity = omega * self.BLADE_RADIUS
+                                
+                                # Calcul du débit (débit = v × S)
+                                flow_rate = fluid_velocity * self.blade_area
+                                
+                                # Mise à jour des affichages
+                                self.speed_label.setText(f"Vitesse: {rpm:.1f} tr/min")
+                                self.flow_label.setText(f"Débit: {flow_rate:.4f} m³/s")
+                                
+                                # Mise à jour immédiate du graphique avec le nouveau débit
+                                self.update_graph(real_current_time, flow_rate)
+                                self.all_times.append(real_current_time)
+                                self.all_flow_rates.append(flow_rate)
                     
                     self.last_time = current_time
                     self.revolution_count += 1
-                    
             self.last_color = is_black
             cv2.imshow("Suivi", tracking_frame)
 
     def calculate_flow_rate(self, rpm):
-        # Convert RPM to radians per second
-        omega = (rpm * 2 * np.pi) / 60
+        # 1. Calcul de la vitesse angulaire ω (rad/s)
+        # ω = 2πN/60 où N est le nombre de tours par minute
+        omega = (2 * np.pi * rpm) / 60
         
-        # Calculate flow rate (Q = ω * A * Cf)
-        flow_rate = omega * self.blade_area * self.flow_coefficient
+        # 2. Calcul de la vitesse du fluide v
+        # v = ω × r où r est le rayon de la turbine
+        fluid_velocity = omega * self.BLADE_RADIUS
+        
+        # 3. Calculer le débit volumique
+        # qv = v × S où S est la surface de l'aube
+        flow_rate = fluid_velocity * self.blade_area
         
         return flow_rate
         
     def update_graph(self, time, flow_rate):
+        """Met à jour le graphique avec les nouvelles données"""
         if self.start_time is None:
             self.start_time = time
         
@@ -296,12 +368,121 @@ class TurbineTracker(QMainWindow):
         self.time_points.append(elapsed_time)
         self.flow_points.append(flow_rate)
         
+        # Mise à jour du graphique
         self.ax.clear()
-        self.ax.plot(list(self.time_points), list(self.flow_points))
-        self.ax.set_xlabel('Temps écoulé (s)')
+        self.ax.plot(list(self.time_points), list(self.flow_points), 'b.', markersize=2)  # Points pour chaque mesure
+        self.ax.plot(list(self.time_points), list(self.flow_points), 'b-', alpha=0.5)     # Ligne continue
+        
+        # Paramètres du graphique
+        self.ax.set_xlabel('Temps (s)')
         self.ax.set_ylabel('Débit (m³/s)')
-        self.ax.set_title('Débit en Temps Réel')
+        self.ax.set_title('Débit instantané')
+        self.ax.grid(True)
+        
+        # Forcer la mise à jour immédiate
         self.canvas.draw()
+        self.canvas.flush_events()
+
+    def save_data(self):
+        """Sauvegarde les données de débit et le graphique"""
+        if not self.all_flow_rates:
+            self.info_label.setText("Pas de données à sauvegarder")
+            return
+            
+        # Sauvegarder les données dans un fichier CSV
+        filename, _ = QFileDialog.getSaveFileName(self, "Sauvegarder les données", "", 
+                                                "Fichiers CSV (*.csv);;Tous les fichiers (*)")
+        if filename:
+            if not filename.endswith('.csv'):
+                filename += '.csv'
+            
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write("Temps (s);Débit (m³/s)\n")
+                    for t, q in zip(self.all_times, self.all_flow_rates):
+                        # Formatage avec virgules pour les décimales et point-virgule comme séparateur
+                        line = f"{str(t).replace('.', ',')};{str(q).replace('.', ',')}\n"
+                        f.write(line)
+                
+                # Sauvegarder le graphique
+                graph_filename = filename.replace('.csv', '_graph.png')
+                self.figure.savefig(graph_filename)
+                
+                self.info_label.setText("Données sauvegardées avec succès")
+            except Exception as e:
+                self.info_label.setText(f"Erreur lors de la sauvegarde: {str(e)}")
+
+    def process_video(self):
+        """Traitement rapide en utilisant la même logique que le traitement normal"""
+        if self.selected_pos is None or self.video_cap is None:
+            return
+
+        # Réinitialiser les variables
+        self.info_label.setText("Traitement en cours...")
+        self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        self.time_points.clear()
+        self.flow_points.clear()
+        self.all_flow_rates = []
+        self.all_times = []
+        self.start_time = None
+        
+        last_color = None
+        last_time = 0
+        revolution_count = 0
+        complete_revolutions = 0
+        measurement_started = False
+
+        # Traiter chaque image
+        while True:
+            ret, frame = self.video_cap.read()
+            if not ret:
+                break
+
+            color = frame[int(self.selected_pos[1]), int(self.selected_pos[0])]
+            
+            # Définir les seuils de couleur comme dans track_pixel
+            is_black = (np.mean(color) < 100 and np.max(color) < 150)
+            
+            if last_color is not None:
+                if (is_black and not last_color) or (not is_black and last_color):
+                    current_time = self.video_cap.get(cv2.CAP_PROP_POS_MSEC)
+                    real_current_time = current_time/1000.0/self.slow_motion_input.value()
+                    
+                    if last_time != 0:
+                        if revolution_count % 4 == 0:  # Un tour complet
+                            complete_revolutions += 1
+                            
+                            if complete_revolutions >= 2:
+                                measurement_started = True
+                                
+                                real_time_diff = (current_time - last_time) / 1000.0
+                                actual_time_diff = real_time_diff / self.slow_motion_input.value()
+                                
+                                rpm = 60.0 / (actual_time_diff * 4)
+                                omega = (2 * np.pi * rpm) / 60
+                                fluid_velocity = omega * self.BLADE_RADIUS
+                                flow_rate = fluid_velocity * self.blade_area
+                                
+                                # Stocker les données
+                                self.all_times.append(real_current_time)
+                                self.all_flow_rates.append(flow_rate)
+                                self.update_graph(real_current_time, flow_rate)
+                    
+                    last_time = current_time
+                    revolution_count += 1
+            last_color = is_black
+
+        # Calcul et affichage des statistiques finales
+        if self.all_flow_rates:
+            avg_flow = np.mean(self.all_flow_rates)
+            std_flow = np.std(self.all_flow_rates)
+            avg_speed = avg_flow / (self.blade_area * self.BLADE_RADIUS)
+            
+            self.flow_label.setText(f"Débit moyen: {avg_flow:.4f} ± {std_flow:.4f} m³/s")
+            self.info_label.setText(f"Traitement terminé - {len(self.all_flow_rates)} mesures")
+            self.speed_label.setText(f"Vitesse moyenne: {avg_speed:.1f} tr/min")
+        else:
+            self.info_label.setText("Aucune donnée n'a pu être analysée")
 
     def __del__(self):
         # Cleanup
