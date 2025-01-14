@@ -1,7 +1,9 @@
 """Configuration settings for the Turbine Tracker application."""
 
+import os
+
 # Paths
-MP4BOX_PATH = r"C:\Program Files\GPAC\mp4box.exe"
+MP4BOX_PATH = r"C:\Program Files\GPAC\mp4box.exe" if os.name == 'nt' else "MP4Box"
 
 # Turbine physical parameters
 BLADE_AREA = 0.65 / 10000.0  # Convert from cm² to m²
