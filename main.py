@@ -4,15 +4,16 @@ import subprocess
 import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout, 
                             QWidget, QLabel, QFileDialog, QDoubleSpinBox)
-from PyQt6.QtCore import QTimer
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from collections import deque
 
 class TurbineTracker(QMainWindow):
+    """Main application window for tracking turbine rotation and calculating flow rates."""
     def __init__(self):
         super().__init__()
+        # Create main window
         self.setWindowTitle("Suivi de Vitesse de Turbine")
         self.tracking = False
         self.last_color = None
@@ -24,16 +25,16 @@ class TurbineTracker(QMainWindow):
         self.frame_count = 0
         self.current_frame_pos = 0
         self.selecting = False
-        self.start_time = None  # Add this after other instance variables
-        self.mp4box_path = r"C:\Program Files\GPAC\mp4box.exe"  # Add path to MP4Box executable if needed
-        self.last_calculation_time = 0  # Temps réel de la dernière calcul de débit
+        self.start_time = None
+        self.mp4box_path = r"C:\Program Files\GPAC\mp4box.exe"
+        self.last_calculation_time = 0
         
         # Create central widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
         
-        # Create UI elements
+        # Create UI elements with French labels 
         self.load_button = QPushButton("Charger Vidéo")
         self.load_button.clicked.connect(self.load_video)
         
@@ -48,33 +49,30 @@ class TurbineTracker(QMainWindow):
         layout.addWidget(self.select_button)
         layout.addWidget(self.info_label)
         
-        self.setGeometry(100, 100, 1024, 768)  # Adjusted window size to 1024x768
-        
-        # Add configuration parameters
-        self.slow_motion_factor = 1.0  # e.g., 8x slow motion = 8.0
-        self.blade_area = 0.0065  # Surface d'une pale en m²
-        
+        self.setGeometry(100, 100, 1024, 768)
+                
         # Data for plotting
-        self.time_points = deque(maxlen=1000)  # Augmenté de 100 à 1000
-        self.flow_points = deque(maxlen=1000)  # Augmenté de 100 à 1000
+        self.time_points = deque(maxlen=1000)
+        self.flow_points = deque(maxlen=1000)
         
         # Create figure for plotting
         self.figure, self.ax = plt.subplots()
         self.canvas = FigureCanvas(self.figure)
         
-        # Add configuration inputs with more precision
+        # Configure slow motion input field
         self.slow_motion_input = QDoubleSpinBox()
-        self.slow_motion_input.setDecimals(2)  # Beaucoup plus de décimales
+        self.slow_motion_input.setDecimals(2)
         self.slow_motion_input.setValue(8.5)
         self.slow_motion_input.setPrefix("1s réelle = ")
         self.slow_motion_input.setSuffix(" s vidéo")
         
+        # Configure blade area input field
         self.area_input = QDoubleSpinBox()
-        self.area_input.setDecimals(6)  # Beaucoup plus de décimales
-        self.area_input.setValue(self.blade_area)
-        self.area_input.setPrefix("Surface Pale (m²): ")  # Correction de l'unité
+        self.area_input.setDecimals(6)
+        self.area_input.setPrefix("Surface Pale (m²): ")
         
-        self.flow_label = QLabel("Débit: 0.000 ml/s")  # Plus de décimales
+        # Flow rate display label
+        self.flow_label = QLabel("Débit: 0.000 ml/s")
         
         # Add new widgets to layout
         layout.addWidget(self.slow_motion_input)
@@ -82,56 +80,56 @@ class TurbineTracker(QMainWindow):
         layout.addWidget(self.flow_label)
         layout.addWidget(self.canvas)
         
-        # Constants for turbine avec unités corrigées
-        self.BLADE_AREA = 0.65 / 10000.0  # 0.65 cm² -> m²
-        self.BLADE_RADIUS = 0.019  # 1.9 cm -> 0.019 m
+        # Constants for turbine 
+        self.BLADE_AREA = 0.65 / 10000.0  # Convert from cm² to m²
+        self.BLADE_RADIUS = 0.019  # Radius in meters
         
-        # Paramètres de conversion
-        self.MS_TO_S = 1000.0  # Conversion ms -> s
-        self.M3S_TO_MLS = 1000000.0  # Conversion m³/s -> ml/s
+        # Conversion parameters
+        self.MS_TO_S = 1000.0  # Milliseconds to seconds
+        self.M3S_TO_MLS = 1000000.0  # m³/s to ml/s
         
         # Update area_input default value
         self.area_input.setValue(self.BLADE_AREA)
         
-        # Update radius display with more precision
+        # Update radius display 
         self.radius_label = QLabel(f"Rayon de la turbine: {self.BLADE_RADIUS*100} cm")
         layout.addWidget(self.radius_label)
 
-        # Ajout du bouton de sauvegarde
+        # Save button
         self.save_button = QPushButton("Sauvegarder Données")
         self.save_button.clicked.connect(self.save_data)
         layout.addWidget(self.save_button)
         
-        # Liste pour stocker toutes les données
+        # List to store all data
         self.all_flow_rates = []
         self.all_times = []
 
-        # Ajout du bouton de traitement rapide
+        # Quick processing button
         self.process_button = QPushButton("Traitement Rapide")
         self.process_button.setEnabled(False)
         self.process_button.clicked.connect(self.process_video)
         layout.addWidget(self.process_button)
 
-        # Ajouter après self.all_times = []
-        self.current_revolution_flows = []  # Pour stocker les débits du tour actuel
-        self.all_revolution_flows = []      # Pour stocker les débits moyens par tour
+        # Add after self.all_times = []
+        self.current_revolution_flows = []
+        self.all_revolution_flows = []
         self.first_revolution_completed = False
 
-        # Ajout des variables de suivi des tours
-        self.complete_revolutions = 0  # Compte des tours complets
-        self.measurement_started = False  # Indique si on a commencé à mesurer
+        # Add variables to track revolutions
+        self.complete_revolutions = 0
+        self.measurement_started = False
 
-        # Add spike filtering parameters with better defaults
-        self.window_size = 7  # Increased window size for better averaging
-        self.outlier_threshold = 2.5  # Standard deviations for outlier detection
-        self.min_flow_rate = 0.0001    # Valeur minimum plus petite
-        self.max_flow_rate = 10000.0   # Valeur maximum plus grande
-        self.max_rate_change = 100.0   # Tolérance plus grande pour les changements
+        # Add spike filtering parameters 
+        self.window_size = 7
+        self.outlier_threshold = 2.5
+        self.min_flow_rate = 0.0001
+        self.max_flow_rate = 10000.0
+        self.max_rate_change = 100.0
         self.last_valid_flow = None
         self.flow_buffer = deque(maxlen=self.window_size)
 
     def fix_video(self, video_path):
-        """Fix problematic MP4 files using MP4Box"""
+        """Repairs corrupted MP4 files using MP4Box utility."""
         try:
             fixed_path = f"{os.path.splitext(video_path)[0]}_fixed.mp4"
             subprocess.run([self.mp4box_path, '-add', video_path, '-new', fixed_path], 
@@ -142,6 +140,7 @@ class TurbineTracker(QMainWindow):
             return None
 
     def load_video(self):
+        """Loads and validates a video file, attempting repair if necessary."""
         filename, _ = QFileDialog.getOpenFileName(self, "Sélectionner un Fichier Vidéo", "", 
                                                 "Fichiers Vidéo (*.mp4 *.avi *.mov *.mkv *.wmv)")
         if filename:
@@ -188,6 +187,7 @@ class TurbineTracker(QMainWindow):
     
     @staticmethod
     def mouse_callback(event, x, y, flags, param):
+        """Handles mouse click events for pixel selection in the video frame."""
         self = param
         if event == cv2.EVENT_LBUTTONDOWN and self.selecting:
             self.selected_pos = (x, y)
@@ -214,7 +214,7 @@ class TurbineTracker(QMainWindow):
             window_name = "Sélectionner Pixel"
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             
-            # Redimensionner la fenêtre de sélection
+            # Resize the selection window
             height, width = frame.shape[:2]
             target_width = 800
             target_height = int(target_width * height / width)
@@ -224,25 +224,26 @@ class TurbineTracker(QMainWindow):
             cv2.imshow(window_name, frame)
             self.selecting = True
             self.info_label.setText("Cliquez sur le pixel que vous souhaitez suivre")
-            cv2.waitKey(0)  # Wait for user input
+            cv2.waitKey(0)
             cv2.destroyAllWindows()
-            # Activer le bouton de traitement rapide après la sélection
+            # Enable quick processing button after selection
             self.process_button.setEnabled(True)
 
     def calculate_flow_rate(self, rpm):
-        # Calcul vitesse angulaire (rad/s)
+        """Calculates fluid flow rate based on turbine RPM."""
+        # Convert RPM to angular velocity (rad/s)
         omega = (2 * np.pi * rpm) / 60.0
         
-        # Calcul vitesse linéaire (m/s)
+        # Calculate linear fluid velocity (m/s)
         fluid_velocity = omega * self.BLADE_RADIUS
         
-        # Calcul débit avec conversion explicite (m³/s -> ml/s)
+        # Calculate flow rate and convert to ml/s
         flow_rate = fluid_velocity * self.BLADE_AREA * self.M3S_TO_MLS
         
         return flow_rate
         
     def update_graph(self, time, flow_rate):
-        """Met à jour le graphique avec les nouvelles données"""
+        """Updates the real-time flow rate plot with new data points."""
         if self.start_time is None:
             self.start_time = time
         
@@ -250,28 +251,28 @@ class TurbineTracker(QMainWindow):
         self.time_points.append(elapsed_time)
         self.flow_points.append(flow_rate)
         
-        # Mise à jour du graphique
+        # Update the graph
         self.ax.clear()
-        self.ax.plot(list(self.time_points), list(self.flow_points), 'b.', markersize=2)  # Points pour chaque mesure
-        self.ax.plot(list(self.time_points), list(self.flow_points), 'b-', alpha=0.5)     # Ligne continue
+        self.ax.plot(list(self.time_points), list(self.flow_points), 'b.', markersize=2)
+        self.ax.plot(list(self.time_points), list(self.flow_points), 'b-', alpha=0.5)
         
-        # Paramètres du graphique avec nouvelle unité
+        # Graph parameters and labels
         self.ax.set_xlabel('Temps (s)')
         self.ax.set_ylabel('Débit (ml/s)')
         self.ax.set_title('Débit instantané')
         self.ax.grid(True)
         
-        # Forcer la mise à jour immédiate
+        # Force immediate update
         self.canvas.draw()
         self.canvas.flush_events()
 
     def save_data(self):
-        """Sauvegarde les données de débit et le graphique"""
+        """Exports flow rate data to CSV and saves the graph as PNG."""
         if not self.all_flow_rates:
             self.info_label.setText("Pas de données à sauvegarder")
             return
             
-        # Sauvegarder les données dans un fichier CSV
+        # Save data to a CSV file
         filename, _ = QFileDialog.getSaveFileName(self, "Sauvegarder les données", "", 
                                                 "Fichiers CSV (*.csv);;Tous les fichiers (*)")
         if filename:
@@ -280,13 +281,13 @@ class TurbineTracker(QMainWindow):
             
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
-                    f.write("Temps (s);Débit (ml/s);Vitesse (tr/min)\n")  # Ajout de la vitesse
+                    f.write("Temps (s);Débit (ml/s);Vitesse (tr/min)\n")
                     for t, q in zip(self.all_times, self.all_flow_rates):
-                        v = q / (self.blade_area * self.BLADE_RADIUS)  # Calcul de la vitesse
-                        line = f"{t};{q};{v}\n"  # Suppression des limitations de décimales
+                        v = q / (self.BLADE_AREA * self.BLADE_RADIUS)
+                        line = f"{t};{q};{v}\n"
                         f.write(line)
                 
-                # Sauvegarder le graphique
+                # Save the graph
                 graph_filename = filename.replace('.csv', '_graph.png')
                 self.figure.savefig(graph_filename)
                 
@@ -295,6 +296,7 @@ class TurbineTracker(QMainWindow):
                 self.info_label.setText(f"Erreur lors de la sauvegarde: {str(e)}")
 
     def process_video(self):
+        """Analyzes video frames to track turbine rotation and calculate flow rates."""
         if self.selected_pos is None or self.video_cap is None:
             return
 
@@ -349,6 +351,7 @@ class TurbineTracker(QMainWindow):
                     revolution_count += 1
             last_color = is_black
 
+        # Update UI with results
         if self.all_flow_rates:
             avg_flow = np.mean(self.all_flow_rates)
             std_flow = np.std(self.all_flow_rates)
@@ -359,12 +362,7 @@ class TurbineTracker(QMainWindow):
             self.info_label.setText("Aucune donnée n'a pu être analysée")
 
     def filter_spike(self, flow_rate):
-        """
-        Enhanced spike filtering using multiple criteria:
-        1. Basic range validation
-        2. Rate of change validation
-        3. Statistical outlier detection
-        """
+        """Filters outlier measurements using statistical analysis and threshold checks."""
         # Basic range check
         if not self.min_flow_rate <= flow_rate <= self.max_flow_rate:
             return self.last_valid_flow if self.last_valid_flow is not None else self.min_flow_rate
@@ -377,15 +375,13 @@ class TurbineTracker(QMainWindow):
 
         # Statistical outlier detection
         self.flow_buffer.append(flow_rate)
-        if len(self.flow_buffer) >= 3:  # Need at least 3 points for statistics
+        if len(self.flow_buffer) >= 3:
             mean = np.mean(self.flow_buffer)
             std = np.std(self.flow_buffer)
             
-            # Check if current value is within acceptable range
             if abs(flow_rate - mean) > self.outlier_threshold * std:
                 return self.last_valid_flow if self.last_valid_flow is not None else mean
             
-            # If we have enough points, use median filtering
             if len(self.flow_buffer) >= 5:
                 sorted_values = sorted(self.flow_buffer)
                 median = sorted_values[len(sorted_values)//2]
@@ -396,12 +392,13 @@ class TurbineTracker(QMainWindow):
         return flow_rate
 
     def __del__(self):
-        # Cleanup
+        """Ensures proper cleanup of video capture and window resources."""
         if self.video_cap is not None:
             self.video_cap.release()
         cv2.destroyAllWindows()
 
 def main():
+    """Application entry point - creates and displays the main window."""
     app = QApplication(sys.argv)
     window = TurbineTracker()
     window.show()
