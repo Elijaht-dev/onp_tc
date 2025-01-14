@@ -8,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from collections import deque
+from config import *
 
 class TurbineTracker(QMainWindow):
     """Main application window for tracking turbine rotation and calculating flow rates."""
@@ -26,7 +27,7 @@ class TurbineTracker(QMainWindow):
         self.current_frame_pos = 0
         self.selecting = False
         self.start_time = None
-        self.mp4box_path = r"C:\Program Files\GPAC\mp4box.exe"
+        self.mp4box_path = MP4BOX_PATH
         self.last_calculation_time = 0
         
         # Create central widget and layout
@@ -52,8 +53,8 @@ class TurbineTracker(QMainWindow):
         self.setGeometry(100, 100, 1024, 768)
                 
         # Data for plotting
-        self.time_points = deque(maxlen=1000)
-        self.flow_points = deque(maxlen=1000)
+        self.time_points = deque(maxlen=PLOT_BUFFER_SIZE)
+        self.flow_points = deque(maxlen=PLOT_BUFFER_SIZE)
         
         # Create figure for plotting
         self.figure, self.ax = plt.subplots()
@@ -62,7 +63,7 @@ class TurbineTracker(QMainWindow):
         # Configure slow motion input field
         self.slow_motion_input = QDoubleSpinBox()
         self.slow_motion_input.setDecimals(2)
-        self.slow_motion_input.setValue(8.5)
+        self.slow_motion_input.setValue(DEFAULT_SLOW_MOTION)
         self.slow_motion_input.setPrefix("1s réelle = ")
         self.slow_motion_input.setSuffix(" s vidéo")
         
@@ -81,12 +82,12 @@ class TurbineTracker(QMainWindow):
         layout.addWidget(self.canvas)
         
         # Constants for turbine 
-        self.BLADE_AREA = 0.65 / 10000.0  # Convert from cm² to m²
-        self.BLADE_RADIUS = 0.019  # Radius in meters
+        self.BLADE_AREA = BLADE_AREA
+        self.BLADE_RADIUS = BLADE_RADIUS  # Radius in meters
         
         # Conversion parameters
-        self.MS_TO_S = 1000.0  # Milliseconds to seconds
-        self.M3S_TO_MLS = 1000000.0  # m³/s to ml/s
+        self.MS_TO_S = MS_TO_S  # Milliseconds to seconds
+        self.M3S_TO_MLS = M3S_TO_MLS  # m³/s to ml/s
         
         # Update area_input default value
         self.area_input.setValue(self.BLADE_AREA)
@@ -117,14 +118,13 @@ class TurbineTracker(QMainWindow):
 
         # Add variables to track revolutions
         self.complete_revolutions = 0
-        self.measurement_started = False
 
         # Add spike filtering parameters 
-        self.window_size = 7
-        self.outlier_threshold = 2.5
-        self.min_flow_rate = 0.0001
-        self.max_flow_rate = 10000.0
-        self.max_rate_change = 100.0
+        self.window_size = FILTER_WINDOW_SIZE
+        self.outlier_threshold = OUTLIER_THRESHOLD
+        self.min_flow_rate = MIN_FLOW_RATE
+        self.max_flow_rate = MAX_FLOW_RATE
+        self.max_rate_change = MAX_RATE_CHANGE
         self.last_valid_flow = None
         self.flow_buffer = deque(maxlen=self.window_size)
 
@@ -216,7 +216,7 @@ class TurbineTracker(QMainWindow):
             
             # Resize the selection window
             height, width = frame.shape[:2]
-            target_width = 800
+            target_width = TARGET_SELECTION_WIDTH
             target_height = int(target_width * height / width)
             cv2.resizeWindow(window_name, target_width, target_height)
             
@@ -312,7 +312,6 @@ class TurbineTracker(QMainWindow):
         last_time = 0
         revolution_count = 0
         complete_revolutions = 0
-        measurement_started = False
 
         while True:
             ret, frame = self.video_cap.read()
@@ -321,7 +320,7 @@ class TurbineTracker(QMainWindow):
 
             color = frame[int(self.selected_pos[1]), int(self.selected_pos[0])]
 
-            is_black = (np.mean(color) < 100 and np.max(color) < 150)
+            is_black = (np.mean(color) < DARK_THRESHOLD and np.max(color) < MAX_COLOR_VALUE)
             
             if last_color is not None:
                 if (is_black and not last_color) or (not is_black and last_color):
@@ -333,7 +332,6 @@ class TurbineTracker(QMainWindow):
                             complete_revolutions += 1
                             
                             if complete_revolutions >= 2:
-                                measurement_started = True
                                 
                                 real_time_diff = (current_time - last_time) / 1000.0
                                 actual_time_diff = real_time_diff / self.slow_motion_input.value()
