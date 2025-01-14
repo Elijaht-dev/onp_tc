@@ -20,7 +20,7 @@ A Python application for tracking turbine rotation and calculating flow rates fr
 pip install -r requirements.txt
 ```
 
-Note: For the video repair functionality to work, GPAC's MP4Box needs to be installed:
+Note: For the video repair functionality to work, GPAC's MP4Box needs to be installed (optional):
 - Windows: Install GPAC from https://gpac.wp.imt.fr/downloads/
 - Linux: `sudo apt-get install gpac`
 - macOS: `brew install gpac`
