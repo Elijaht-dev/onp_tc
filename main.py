@@ -67,8 +67,8 @@ class TurbineTracker(QMainWindow):
         self.blade_area = 0.0065  # Surface d'une pale en m²
         
         # Data for plotting
-        self.time_points = deque(maxlen=100)
-        self.flow_points = deque(maxlen=100)
+        self.time_points = deque(maxlen=1000)  # Augmenté de 100 à 1000
+        self.flow_points = deque(maxlen=1000)  # Augmenté de 100 à 1000
         
         # Create figure for plotting
         self.figure, self.ax = plt.subplots()
@@ -82,10 +82,10 @@ class TurbineTracker(QMainWindow):
         self.slow_motion_input.setSuffix(" s vidéo")
         
         self.area_input = QDoubleSpinBox()
-        self.area_input.setRange(0, 0.01)  # Ajusté pour des surfaces en m²
-        self.area_input.setDecimals(4)  # 4 décimales
+        self.area_input.setRange(0, 10)  # Ajusté pour des surfaces en cm²
+        self.area_input.setDecimals(2)  # 2 décimales suffisent pour les cm²
         self.area_input.setValue(self.blade_area)
-        self.area_input.setPrefix("Surface Pale (m²): ")
+        self.area_input.setPrefix("Surface Pale (cm²): ")
         
         self.flow_label = QLabel("Débit: 0.0 m³/s")
         
@@ -96,14 +96,14 @@ class TurbineTracker(QMainWindow):
         layout.addWidget(self.canvas)
         
         # Constants for turbine
-        self.BLADE_AREA = 0.0065  # Surface d'une pale en m²
-        self.BLADE_RADIUS = 0.019  # 1.9 cm to m
+        self.BLADE_AREA = 0.65  # Surface d'une pale en cm²
+        self.BLADE_RADIUS = 1.9  # Rayon en cm
         
         # Update area_input default value
         self.area_input.setValue(self.BLADE_AREA)
         
         # Add radius display
-        self.radius_label = QLabel(f"Rayon de la turbine: {self.BLADE_RADIUS * 100:.1f} cm")
+        self.radius_label = QLabel(f"Rayon de la turbine: {self.BLADE_RADIUS:.1f} cm")
         layout.addWidget(self.radius_label)
 
         # Ajout du bouton de sauvegarde
@@ -129,6 +129,15 @@ class TurbineTracker(QMainWindow):
         # Ajout des variables de suivi des tours
         self.complete_revolutions = 0  # Compte des tours complets
         self.measurement_started = False  # Indique si on a commencé à mesurer
+
+        # Add spike filtering parameters with better defaults
+        self.window_size = 7  # Increased window size for better averaging
+        self.outlier_threshold = 2.5  # Standard deviations for outlier detection
+        self.min_flow_rate = 0.1  # Minimum acceptable flow rate
+        self.max_flow_rate = 1000.0  # Maximum acceptable flow rate
+        self.max_rate_change = 50.0  # Maximum allowed change between consecutive measurements
+        self.last_valid_flow = None
+        self.flow_buffer = deque(maxlen=self.window_size)
 
     def fix_video(self, video_path):
         """Fix problematic MP4 files using MP4Box"""
@@ -330,9 +339,12 @@ class TurbineTracker(QMainWindow):
                                 # Calcul du débit (débit = v × S)
                                 flow_rate = fluid_velocity * self.blade_area
                                 
+                                # Add spike filtering here
+                                flow_rate = self.filter_spike(flow_rate)
+                                
                                 # Mise à jour des affichages
                                 self.speed_label.setText(f"Vitesse: {rpm:.1f} tr/min")
-                                self.flow_label.setText(f"Débit: {flow_rate:.4f} m³/s")
+                                self.flow_label.setText(f"Débit: {flow_rate:.1f} cm³/s")
                                 
                                 # Mise à jour immédiate du graphique avec le nouveau débit
                                 self.update_graph(real_current_time, flow_rate)
@@ -355,7 +367,7 @@ class TurbineTracker(QMainWindow):
         
         # 3. Calculer le débit volumique
         # qv = v × S où S est la surface de l'aube
-        flow_rate = fluid_velocity * self.blade_area
+        flow_rate = fluid_velocity * self.BLADE_AREA
         
         return flow_rate
         
@@ -375,7 +387,7 @@ class TurbineTracker(QMainWindow):
         
         # Paramètres du graphique
         self.ax.set_xlabel('Temps (s)')
-        self.ax.set_ylabel('Débit (m³/s)')
+        self.ax.set_ylabel('Débit (cm³/s)')
         self.ax.set_title('Débit instantané')
         self.ax.grid(True)
         
@@ -398,7 +410,7 @@ class TurbineTracker(QMainWindow):
             
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
-                    f.write("Temps (s);Débit (m³/s)\n")
+                    f.write("Temps (s);Débit (cm³/s)\n")
                     for t, q in zip(self.all_times, self.all_flow_rates):
                         # Formatage avec virgules pour les décimales et point-virgule comme séparateur
                         line = f"{str(t).replace('.', ',')};{str(q).replace('.', ',')}\n"
@@ -463,6 +475,9 @@ class TurbineTracker(QMainWindow):
                                 fluid_velocity = omega * self.BLADE_RADIUS
                                 flow_rate = fluid_velocity * self.blade_area
                                 
+                                # Add spike filtering here
+                                flow_rate = self.filter_spike(flow_rate)
+                                
                                 # Stocker les données
                                 self.all_times.append(real_current_time)
                                 self.all_flow_rates.append(flow_rate)
@@ -478,11 +493,48 @@ class TurbineTracker(QMainWindow):
             std_flow = np.std(self.all_flow_rates)
             avg_speed = avg_flow / (self.blade_area * self.BLADE_RADIUS)
             
-            self.flow_label.setText(f"Débit moyen: {avg_flow:.4f} ± {std_flow:.4f} m³/s")
+            self.flow_label.setText(f"Débit moyen: {avg_flow:.1f} ± {std_flow:.1f} cm³/s")
             self.info_label.setText(f"Traitement terminé - {len(self.all_flow_rates)} mesures")
             self.speed_label.setText(f"Vitesse moyenne: {avg_speed:.1f} tr/min")
         else:
             self.info_label.setText("Aucune donnée n'a pu être analysée")
+
+    def filter_spike(self, flow_rate):
+        """
+        Enhanced spike filtering using multiple criteria:
+        1. Basic range validation
+        2. Rate of change validation
+        3. Statistical outlier detection
+        """
+        # Basic range check
+        if not self.min_flow_rate <= flow_rate <= self.max_flow_rate:
+            return self.last_valid_flow if self.last_valid_flow is not None else self.min_flow_rate
+
+        # Rate of change check
+        if self.last_valid_flow is not None:
+            rate_change = abs(flow_rate - self.last_valid_flow)
+            if rate_change > self.max_rate_change:
+                return self.last_valid_flow
+
+        # Statistical outlier detection
+        self.flow_buffer.append(flow_rate)
+        if len(self.flow_buffer) >= 3:  # Need at least 3 points for statistics
+            mean = np.mean(self.flow_buffer)
+            std = np.std(self.flow_buffer)
+            
+            # Check if current value is within acceptable range
+            if abs(flow_rate - mean) > self.outlier_threshold * std:
+                return self.last_valid_flow if self.last_valid_flow is not None else mean
+            
+            # If we have enough points, use median filtering
+            if len(self.flow_buffer) >= 5:
+                sorted_values = sorted(self.flow_buffer)
+                median = sorted_values[len(sorted_values)//2]
+                if abs(flow_rate - median) > self.max_rate_change:
+                    return median
+
+        self.last_valid_flow = flow_rate
+        return flow_rate
 
     def __del__(self):
         # Cleanup
