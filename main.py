@@ -284,7 +284,8 @@ class TurbineTracker(QMainWindow):
                     f.write("Temps (s);Débit (ml/s);Vitesse (tr/min)\n")
                     for t, q in zip(self.all_times, self.all_flow_rates):
                         v = q / (self.BLADE_AREA * self.BLADE_RADIUS)
-                        line = f"{t};{q};{v}\n"
+                        # Convert decimal points to commas
+                        line = f"{str(t).replace('.',',')};{str(q).replace('.',',')};{str(v).replace('.',',')}\n"
                         f.write(line)
                 
                 # Save the graph
